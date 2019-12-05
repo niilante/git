@@ -18,6 +18,9 @@
    You should have received a copy of the GNU General Public License along
    with this program; if not, see <http://www.gnu.org/licenses/>.  */
 
+/* To bump the minimum Windows version to Windows Vista */
+#include "git-compat-util.h"
+
 /* Tell gcc not to warn about the (nfd < 0) tests, below.  */
 #if (__GNUC__ == 4 && 3 <= __GNUC_MINOR__) || 4 < __GNUC__
 # pragma GCC diagnostic ignored "-Wtype-limits"
@@ -28,9 +31,6 @@
 #endif
 
 #include <sys/types.h>
-
-/* Specification.  */
-#include <poll.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -54,6 +54,9 @@
 # endif
 # include <unistd.h>
 #endif
+
+/* Specification.  */
+#include "poll.h"
 
 #ifdef HAVE_SYS_IOCTL_H
 # include <sys/ioctl.h>
@@ -146,8 +149,8 @@ win32_compute_revents (HANDLE h, int *p_sought)
     case FILE_TYPE_PIPE:
       if (!once_only)
 	{
-	  NtQueryInformationFile = (PNtQueryInformationFile)
-	    GetProcAddress (GetModuleHandle ("ntdll.dll"),
+	  NtQueryInformationFile = (PNtQueryInformationFile)(void (*)(void))
+	    GetProcAddress (GetModuleHandleW (L"ntdll.dll"),
 			    "NtQueryInformationFile");
 	  once_only = TRUE;
 	}
@@ -265,20 +268,6 @@ win32_compute_revents_socket (SOCKET h, int sought, long lNetworkEvents)
 
   return happened;
 }
-
-#include <windows.h>
-#include "compat/win32/lazyload.h"
-
-static ULONGLONG CompatGetTickCount64(void)
-{
-	DECLARE_PROC_ADDR(kernel32.dll, ULONGLONG, GetTickCount64, void);
-
-	if (!INIT_PROC_ADDR(GetTickCount64))
-		return (ULONGLONG)GetTickCount();
-
-	return GetTickCount64();
-}
-#define GetTickCount64 CompatGetTickCount64
 
 #else /* !MinGW */
 
@@ -463,7 +452,7 @@ poll (struct pollfd *pfd, nfds_t nfd, int timeout)
   static HANDLE hEvent;
   WSANETWORKEVENTS ev;
   HANDLE h, handle_array[FD_SETSIZE + 2];
-  DWORD ret, wait_timeout, nhandles, elapsed, orig_timeout = 0;
+  DWORD ret, wait_timeout, nhandles, orig_timeout = 0;
   ULONGLONG start = 0;
   fd_set rfds, wfds, xfds;
   BOOL poll_again;
@@ -629,8 +618,8 @@ restart:
 
   if (!rc && orig_timeout && timeout != INFTIM)
     {
-      elapsed = (DWORD)(GetTickCount64() - start);
-      timeout = elapsed >= orig_timeout ? 0 : orig_timeout - elapsed;
+      ULONGLONG elapsed = GetTickCount64() - start;
+      timeout = elapsed >= orig_timeout ? 0 : (int)(orig_timeout - elapsed);
     }
 
   if (!rc && timeout)

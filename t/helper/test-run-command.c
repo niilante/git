@@ -8,6 +8,8 @@
  * published by the Free Software Foundation.
  */
 
+#include "test-tool.h"
+#include "git-compat-util.h"
 #include "cache.h"
 #include "run-command.h"
 #include "argv-array.h"
@@ -56,8 +58,10 @@ static int task_finished(int result,
 struct testsuite {
 	struct string_list tests, failed;
 	int next;
-	int quiet, immediate, verbose, trace;
+	int quiet, immediate, verbose, verbose_log, trace, write_junit_xml;
 };
+#define TESTSUITE_INIT \
+	{ STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, -1, 0, 0, 0, 0, 0, 0 }
 
 static int next_test(struct child_process *cp, struct strbuf *err, void *cb,
 		     void **task_cb)
@@ -75,8 +79,12 @@ static int next_test(struct child_process *cp, struct strbuf *err, void *cb,
 		argv_array_push(&cp->args, "-i");
 	if (suite->verbose)
 		argv_array_push(&cp->args, "-v");
+	if (suite->verbose_log)
+		argv_array_push(&cp->args, "-V");
 	if (suite->trace)
 		argv_array_push(&cp->args, "-x");
+	if (suite->write_junit_xml)
+		argv_array_push(&cp->args, "--write-junit-xml");
 
 	strbuf_addf(err, "Output of '%s':\n", test);
 	*task_cb = (void *)test;
@@ -116,7 +124,7 @@ static const char * const testsuite_usage[] = {
 
 static int testsuite(int argc, const char **argv)
 {
-	struct testsuite suite;
+	struct testsuite suite = TESTSUITE_INIT;
 	int max_jobs = 1, i, ret;
 	DIR *dir;
 	struct dirent *d;
@@ -126,7 +134,11 @@ static int testsuite(int argc, const char **argv)
 		OPT_INTEGER('j', "jobs", &max_jobs, "run <N> jobs in parallel"),
 		OPT_BOOL('q', "quiet", &suite.quiet, "be terse"),
 		OPT_BOOL('v', "verbose", &suite.verbose, "be verbose"),
+		OPT_BOOL('V', "verbose-log", &suite.verbose_log,
+			 "be verbose, redirected to a file"),
 		OPT_BOOL('x', "trace", &suite.trace, "trace shell commands"),
+		OPT_BOOL(0, "write-junit-xml", &suite.write_junit_xml,
+			 "write JUnit-style XML files"),
 		OPT_END()
 	};
 
@@ -188,13 +200,67 @@ static int testsuite(int argc, const char **argv)
 	return !!ret;
 }
 
-int cmd_main(int argc, const char **argv)
+static int inherit_handle(const char *argv0)
+{
+	struct child_process cp = CHILD_PROCESS_INIT;
+	char path[PATH_MAX];
+	int tmp;
+
+	/* First, open an inheritable handle */
+	xsnprintf(path, sizeof(path), "out-XXXXXX");
+	tmp = xmkstemp(path);
+
+	argv_array_pushl(&cp.args,
+			 "test-tool", argv0, "inherited-handle-child", NULL);
+	cp.in = -1;
+	cp.no_stdout = cp.no_stderr = 1;
+	if (start_command(&cp) < 0)
+		die("Could not start child process");
+
+	/* Then close it, and try to delete it. */
+	close(tmp);
+	if (unlink(path))
+		die("Could not delete '%s'", path);
+
+	if (close(cp.in) < 0 || finish_command(&cp) < 0)
+		die("Child did not finish");
+
+	return 0;
+}
+
+static int inherit_handle_child(void)
+{
+	struct strbuf buf = STRBUF_INIT;
+
+	if (strbuf_read(&buf, 0, 0) < 0)
+		die("Could not read stdin");
+	printf("Received %s\n", buf.buf);
+	strbuf_release(&buf);
+
+	return 0;
+}
+
+int cmd__run_command(int argc, const char **argv)
 {
 	struct child_process proc = CHILD_PROCESS_INIT;
 	int jobs;
 
 	if (argc > 1 && !strcmp(argv[1], "testsuite"))
 		exit(testsuite(argc - 1, argv + 1));
+	if (!strcmp(argv[1], "inherited-handle"))
+		exit(inherit_handle(argv[0]));
+	if (!strcmp(argv[1], "inherited-handle-child"))
+		exit(inherit_handle_child());
+
+	if (argc < 3)
+		return 1;
+	while (!strcmp(argv[1], "env")) {
+		if (!argv[2])
+			die("env specifier without a value");
+		argv_array_push(&proc.env_array, argv[2]);
+		argv += 2;
+		argc -= 2;
+	}
 	if (argc < 3)
 		return 1;
 	proc.argv = (const char **)argv + 2;

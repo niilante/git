@@ -1,13 +1,19 @@
 #include "builtin.h"
 #include "cache.h"
+#include "repository.h"
 #include "config.h"
 #include "commit.h"
 #include "tag.h"
 #include "refs.h"
 #include "parse-options.h"
 #include "sha1-lookup.h"
+#include "commit-slab.h"
 
-#define CUTOFF_DATE_SLOP 86400 /* one day */
+/*
+ * One day.  See the 'name a rev shortly after epoch' test in t6120 when
+ * changing this value
+ */
+#define CUTOFF_DATE_SLOP 86400
 
 typedef struct rev_name {
 	const char *tip_name;
@@ -17,15 +23,28 @@ typedef struct rev_name {
 	int from_tag;
 } rev_name;
 
+define_commit_slab(commit_rev_name, struct rev_name *);
+
 static timestamp_t cutoff = TIME_MAX;
+static struct commit_rev_name rev_names;
 
 /* How many generations are maximally preferred over _one_ merge traversal? */
 #define MERGE_TRAVERSAL_WEIGHT 65535
 
+static struct rev_name *get_commit_rev_name(struct commit *commit)
+{
+	struct rev_name **slot = commit_rev_name_peek(&rev_names, commit);
+
+	return slot ? *slot : NULL;
+}
+
+static void set_commit_rev_name(struct commit *commit, struct rev_name *name)
+{
+	*commit_rev_name_at(&rev_names, commit) = name;
+}
+
 static int is_better_name(struct rev_name *name,
-			  const char *tip_name,
 			  timestamp_t taggerdate,
-			  int generation,
 			  int distance,
 			  int from_tag)
 {
@@ -65,7 +84,7 @@ static void name_rev(struct commit *commit,
 		int generation, int distance, int from_tag,
 		int deref)
 {
-	struct rev_name *name = (struct rev_name *)commit->util;
+	struct rev_name *name = get_commit_rev_name(commit);
 	struct commit_list *parents;
 	int parent_number = 1;
 	char *to_free = NULL;
@@ -84,10 +103,9 @@ static void name_rev(struct commit *commit,
 
 	if (name == NULL) {
 		name = xmalloc(sizeof(rev_name));
-		commit->util = name;
+		set_commit_rev_name(commit, name);
 		goto copy_data;
-	} else if (is_better_name(name, tip_name, taggerdate,
-				  generation, distance, from_tag)) {
+	} else if (is_better_name(name, taggerdate, distance, from_tag)) {
 copy_data:
 		name->tip_name = tip_name;
 		name->taggerdate = taggerdate;
@@ -187,7 +205,7 @@ static int tipcmp(const void *a_, const void *b_)
 
 static int name_ref(const char *path, const struct object_id *oid, int flags, void *cb_data)
 {
-	struct object *o = parse_object(oid);
+	struct object *o = parse_object(the_repository, oid);
 	struct name_ref_data *data = cb_data;
 	int can_abbreviate_output = data->tags_only && data->name_only;
 	int deref = 0;
@@ -245,7 +263,7 @@ static int name_ref(const char *path, const struct object_id *oid, int flags, vo
 		struct tag *t = (struct tag *) o;
 		if (!t->tagged)
 			break; /* broken repository */
-		o = parse_object(&t->tagged->oid);
+		o = parse_object(the_repository, &t->tagged->oid);
 		deref = 1;
 		taggerdate = t->date;
 	}
@@ -296,7 +314,7 @@ static const char *get_rev_name(const struct object *o, struct strbuf *buf)
 	if (o->type != OBJ_COMMIT)
 		return get_exact_ref_match(o);
 	c = (struct commit *) o;
-	n = c->util;
+	n = get_commit_rev_name(c);
 	if (!n)
 		return NULL;
 
@@ -328,7 +346,7 @@ static void show_name(const struct object *obj,
 	else if (allow_undefined)
 		printf("undefined\n");
 	else if (always)
-		printf("%s\n", find_unique_abbrev(oid->hash, DEFAULT_ABBREV));
+		printf("%s\n", find_unique_abbrev(oid, DEFAULT_ABBREV));
 	else
 		die("cannot describe '%s'", oid_to_hex(oid));
 	strbuf_release(&buf);
@@ -344,25 +362,27 @@ static char const * const name_rev_usage[] = {
 static void name_rev_line(char *p, struct name_ref_data *data)
 {
 	struct strbuf buf = STRBUF_INIT;
-	int forty = 0;
+	int counter = 0;
 	char *p_start;
+	const unsigned hexsz = the_hash_algo->hexsz;
+
 	for (p_start = p; *p; p++) {
 #define ishex(x) (isdigit((x)) || ((x) >= 'a' && (x) <= 'f'))
 		if (!ishex(*p))
-			forty = 0;
-		else if (++forty == GIT_SHA1_HEXSZ &&
+			counter = 0;
+		else if (++counter == hexsz &&
 			 !ishex(*(p+1))) {
 			struct object_id oid;
 			const char *name = NULL;
 			char c = *(p+1);
 			int p_len = p - p_start + 1;
 
-			forty = 0;
+			counter = 0;
 
 			*(p+1) = 0;
-			if (!get_oid(p - (GIT_SHA1_HEXSZ - 1), &oid)) {
+			if (!get_oid(p - (hexsz - 1), &oid)) {
 				struct object *o =
-					lookup_object(oid.hash);
+					lookup_object(the_repository, &oid);
 				if (o)
 					name = get_rev_name(o, &buf);
 			}
@@ -372,7 +392,7 @@ static void name_rev_line(char *p, struct name_ref_data *data)
 				continue;
 
 			if (data->name_only)
-				printf("%.*s%s", p_len - GIT_SHA1_HEXSZ, p_start, name);
+				printf("%.*s%s", p_len - hexsz, p_start, name);
 			else
 				printf("%.*s (%s)", p_len, p_start, name);
 			p_start = p + 1;
@@ -413,6 +433,7 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		OPT_END(),
 	};
 
+	init_commit_rev_name(&rev_names);
 	git_config(git_default_config, NULL);
 	argc = parse_options(argc, argv, prefix, opts, name_rev_usage, 0);
 	if (all + transform_stdin + !!argc > 1) {
@@ -434,9 +455,10 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		}
 
 		commit = NULL;
-		object = parse_object(&oid);
+		object = parse_object(the_repository, &oid);
 		if (object) {
-			struct object *peeled = deref_tag(object, *argv, 0);
+			struct object *peeled = deref_tag(the_repository,
+							  object, *argv, 0);
 			if (peeled && peeled->type == OBJ_COMMIT)
 				commit = (struct commit *)peeled;
 		}
@@ -463,8 +485,13 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		add_object_array(object, *argv, &revs);
 	}
 
-	if (cutoff)
-		cutoff = cutoff - CUTOFF_DATE_SLOP;
+	if (cutoff) {
+		/* check for undeflow */
+		if (cutoff > TIME_MIN + CUTOFF_DATE_SLOP)
+			cutoff = cutoff - CUTOFF_DATE_SLOP;
+		else
+			cutoff = TIME_MIN;
+	}
 	for_each_ref(name_ref, &data);
 
 	if (transform_stdin) {

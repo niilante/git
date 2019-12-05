@@ -1,6 +1,8 @@
 #include "builtin.h"
+#include "config.h"
 #include "parse-options.h"
 #include "refs.h"
+#include "repository.h"
 #include "config.h"
 
 static char const * const pack_refs_usage[] = {
@@ -19,5 +21,5 @@ int cmd_pack_refs(int argc, const char **argv, const char *prefix)
 	git_config(git_default_config, NULL);
 	if (parse_options(argc, argv, prefix, opts, pack_refs_usage, 0))
 		usage_with_options(pack_refs_usage, opts);
-	return refs_pack_refs(get_main_ref_store(), flags);
+	return refs_pack_refs(get_main_ref_store(the_repository), flags);
 }

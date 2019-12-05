@@ -1,10 +1,43 @@
 #ifndef REPOSITORY_H
 #define REPOSITORY_H
 
+#include "path.h"
+
 struct config_set;
-struct index_state;
-struct submodule_cache;
 struct git_hash_algo;
+struct index_state;
+struct lock_file;
+struct pathspec;
+struct raw_object_store;
+struct submodule_cache;
+
+enum untracked_cache_setting {
+	UNTRACKED_CACHE_UNSET = -1,
+	UNTRACKED_CACHE_REMOVE = 0,
+	UNTRACKED_CACHE_KEEP = 1,
+	UNTRACKED_CACHE_WRITE = 2
+};
+
+enum fetch_negotiation_setting {
+	FETCH_NEGOTIATION_UNSET = -1,
+	FETCH_NEGOTIATION_NONE = 0,
+	FETCH_NEGOTIATION_DEFAULT = 1,
+	FETCH_NEGOTIATION_SKIPPING = 2,
+};
+
+struct repo_settings {
+	int initialized;
+
+	int core_commit_graph;
+	int gc_write_commit_graph;
+	int fetch_write_commit_graph;
+
+	int index_version;
+	enum untracked_cache_setting core_untracked_cache;
+
+	int pack_use_sparse;
+	enum fetch_negotiation_setting fetch_negotiation_algorithm;
+};
 
 struct repository {
 	/* Environment */
@@ -21,10 +54,26 @@ struct repository {
 	char *commondir;
 
 	/*
-	 * Path to the repository's object store.
-	 * Cannot be NULL after initialization.
+	 * Holds any information related to accessing the raw object content.
 	 */
-	char *objectdir;
+	struct raw_object_store *objects;
+
+	/*
+	 * All objects in this repository that have been parsed. This structure
+	 * owns all objects it references, so users of "struct object *"
+	 * generally do not need to free them; instead, when a repository is no
+	 * longer used, call parsed_object_pool_clear() on this structure, which
+	 * is called by the repositories repo_clear on its desconstruction.
+	 */
+	struct parsed_object_pool *parsed_objects;
+
+	/* The store in which the refs are held. */
+	struct ref_store *refs;
+
+	/*
+	 * Contains path to often used file names.
+	 */
+	struct path_cache cached_paths;
 
 	/*
 	 * Path to the repository's graft file.
@@ -51,6 +100,8 @@ struct repository {
 	 */
 	char *submodule_prefix;
 
+	struct repo_settings settings;
+
 	/* Subsystems */
 	/*
 	 * Repository's config which contains key-value pairs from the usual
@@ -71,16 +122,13 @@ struct repository {
 	/* Repository's current hash algorithm, as serialized on disk. */
 	const struct git_hash_algo *hash_algo;
 
+	/* A unique-id for tracing purposes. */
+	int trace2_repo_id;
+
+	/* True if commit-graph has been disabled within this process. */
+	int commit_graph_disabled;
+
 	/* Configurations */
-	/*
-	 * Bit used during initialization to indicate if repository state (like
-	 * the location of the 'objectdir') should be read from the
-	 * environment.  By default this bit will be set at the begining of
-	 * 'repo_init()' so that all repositories will ignore the environment.
-	 * The exception to this is 'the_repository', which doesn't go through
-	 * the normal 'repo_init()' process.
-	 */
-	unsigned ignore_env:1;
 
 	/* Indicate if a repository has a different 'commondir' from 'gitdir' */
 	unsigned different_commondir:1;
@@ -88,14 +136,36 @@ struct repository {
 
 extern struct repository *the_repository;
 
-extern void repo_set_gitdir(struct repository *repo, const char *path);
-extern void repo_set_worktree(struct repository *repo, const char *path);
-extern void repo_set_hash_algo(struct repository *repo, int algo);
-extern int repo_init(struct repository *repo, const char *gitdir, const char *worktree);
-extern int repo_submodule_init(struct repository *submodule,
-			       struct repository *superproject,
-			       const char *path);
-extern void repo_clear(struct repository *repo);
+/*
+ * Define a custom repository layout. Any field can be NULL, which
+ * will default back to the path according to the default layout.
+ */
+struct set_gitdir_args {
+	const char *commondir;
+	const char *object_dir;
+	const char *graft_file;
+	const char *index_file;
+	const char *alternate_db;
+};
+
+void repo_set_gitdir(struct repository *repo, const char *root,
+		     const struct set_gitdir_args *extra_args);
+void repo_set_worktree(struct repository *repo, const char *path);
+void repo_set_hash_algo(struct repository *repo, int algo);
+void initialize_the_repository(void);
+int repo_init(struct repository *r, const char *gitdir, const char *worktree);
+
+/*
+ * Initialize the repository 'subrepo' as the submodule given by the
+ * struct submodule 'sub' in parent repository 'superproject'.
+ * Return 0 upon success and a non-zero value upon failure, which may happen
+ * if the submodule is not found, or 'sub' is NULL.
+ */
+struct submodule;
+int repo_submodule_init(struct repository *subrepo,
+			struct repository *superproject,
+			const struct submodule *sub);
+void repo_clear(struct repository *repo);
 
 /*
  * Populates the repository's index from its index_file, an index struct will
@@ -105,6 +175,21 @@ extern void repo_clear(struct repository *repo);
  * than zero if an error occured.  If the repository's index has already been
  * populated then the number of entries will simply be returned.
  */
-extern int repo_read_index(struct repository *repo);
+int repo_read_index(struct repository *repo);
+int repo_hold_locked_index(struct repository *repo,
+			   struct lock_file *lf,
+			   int flags);
+
+int repo_read_index_preload(struct repository *,
+			    const struct pathspec *pathspec,
+			    unsigned refresh_flags);
+int repo_read_index_unmerged(struct repository *);
+/*
+ * Opportunistically update the index but do not complain if we can't.
+ * The lockfile is always committed or rolled back.
+ */
+void repo_update_index_if_able(struct repository *, struct lock_file *);
+
+void prepare_repo_settings(struct repository *r);
 
 #endif /* REPOSITORY_H */

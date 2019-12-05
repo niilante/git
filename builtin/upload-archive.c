@@ -30,6 +30,8 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 		die("'%s' does not appear to be a git repository", argv[1]);
 
 	git_config(git_default_config, NULL);
+	init_archivers();
+
 	/* put received options in sent_argv[] */
 	argv_array_push(&sent_argv, "git-upload-archive");
 	for (;;) {
@@ -45,7 +47,8 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 	}
 
 	/* parse all options sent by the client */
-	return write_archive(sent_argv.argc, sent_argv.argv, prefix, NULL, 1);
+	return write_archive(sent_argv.argc, sent_argv.argv, prefix,
+			     the_repository, NULL, 1);
 }
 
 __attribute__((format (printf, 1, 2)))

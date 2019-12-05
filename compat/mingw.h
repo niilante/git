@@ -14,7 +14,7 @@ typedef _sigset_t sigset_t;
 extern int core_fscache;
 extern int core_long_paths;
 
-extern int mingw_core_config(const char *var, const char *value, void *cb);
+int mingw_core_config(const char *var, const char *value, void *cb);
 #define platform_core_config mingw_core_config
 
 /*
@@ -146,8 +146,7 @@ static inline int fcntl(int fd, int cmd, ...)
 	errno = EINVAL;
 	return -1;
 }
-/* bash cannot reliably detect negative return codes as failure */
-#define exit(code) exit((code) & 0xff)
+
 #define sigemptyset(x) (void)0
 static inline int sigaddset(sigset_t *set, int signum)
 { return 0; }
@@ -214,8 +213,10 @@ int setitimer(int type, struct itimerval *in, struct itimerval *out);
 int sigaction(int sig, struct sigaction *in, struct sigaction *out);
 int link(const char *oldpath, const char *newpath);
 int uname(struct utsname *buf);
-int symlink(const char *target, const char *link);
 int readlink(const char *path, char *buf, size_t bufsiz);
+struct index_state;
+int mingw_create_symlink(struct index_state *index, const char *target, const char *link);
+#define create_symlink mingw_create_symlink
 
 /*
  * replacements of existing functions
@@ -262,12 +263,11 @@ char *mingw_getcwd(char *pointer, int len);
 #define getcwd mingw_getcwd
 
 #ifdef NO_UNSETENV
-#error "NO_UNSETENV is incompatible with the MinGW startup code!"
+#error "NO_UNSETENV is incompatible with the Windows-specific startup code!"
 #endif
 
-#if defined(_MSC_VER)
 /*
- * We bind *env() routines (even the mingw_ ones) to private msc_ versions.
+ * We bind *env() routines (even the mingw_ ones) to private mingw_ versions.
  * These talk to the CRT using UNICODE/wchar_t, but maintain the original
  * narrow-char API.
  *
@@ -276,7 +276,7 @@ char *mingw_getcwd(char *pointer, int len);
  * (and secretly updates both when you set one or the other), but it uses CP_ACP
  * to do the conversion rather than CP_UTF8.
  *
- * Since everything in the git code base is UTF8, we define the msc_ routines
+ * Since everything in the git code base is UTF8, we define the mingw_ routines
  * to access the CRT using the UNICODE routines and manually convert them to
  * UTF8.  This also avoids round-trip problems.
  *
@@ -284,33 +284,13 @@ char *mingw_getcwd(char *pointer, int len);
  * from the CRT.  But to access "_environ" we would have to statically link
  * to the CRT (/MT).
  *
- * We also use "wmain(argc,argv,env)" and get the initial UNICODE setup for us.
- * This avoids the need for the msc_startup() to import and convert the
- * inherited environment.
- *
- * We require NO_SETENV (and let gitsetenv() call our msc_putenv).
+ * We require NO_SETENV (and let gitsetenv() call our mingw_putenv).
  */
-#define getenv       msc_getenv
-#define putenv       msc_putenv
-#define unsetenv     msc_putenv
-#define mingw_getenv msc_getenv
-#define mingw_putenv msc_putenv
-char *msc_getenv(const char *name);
-int   msc_putenv(const char *name);
-
-#ifndef NO_SETENV
-#error "NO_SETENV is required for MSC startup code!"
-#endif
-
-#else
-
+#define getenv       mingw_getenv
+#define putenv       mingw_putenv
+#define unsetenv     mingw_putenv
 char *mingw_getenv(const char *name);
-#define getenv mingw_getenv
-int mingw_putenv(const char *namevalue);
-#define putenv mingw_putenv
-#define unsetenv mingw_putenv
-
-#endif
+int   mingw_putenv(const char *name);
 
 int mingw_gethostname(char *host, int namelen);
 #define gethostname mingw_gethostname
@@ -318,17 +298,9 @@ int mingw_gethostname(char *host, int namelen);
 struct hostent *mingw_gethostbyname(const char *host);
 #define gethostbyname mingw_gethostbyname
 
-void mingw_freeaddrinfo(struct addrinfo *res);
-#define freeaddrinfo mingw_freeaddrinfo
-
 int mingw_getaddrinfo(const char *node, const char *service,
 		      const struct addrinfo *hints, struct addrinfo **res);
 #define getaddrinfo mingw_getaddrinfo
-
-int mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
-		      char *host, DWORD hostlen, char *serv, DWORD servlen,
-		      int flags);
-#define getnameinfo mingw_getnameinfo
 
 int mingw_socket(int domain, int type, int protocol);
 #define socket mingw_socket
@@ -485,37 +457,20 @@ HANDLE winansi_get_osfhandle(int fd);
  * git specific compatibility
  */
 
-#define has_dos_drive_prefix(path) \
-	(isalpha(*(path)) && (path)[1] == ':' ? 2 : 0)
-int mingw_skip_dos_drive_prefix(char **path);
-#define skip_dos_drive_prefix mingw_skip_dos_drive_prefix
-static inline int mingw_is_dir_sep(int c)
-{
-	return c == '/' || c == '\\';
-}
-#define is_dir_sep mingw_is_dir_sep
-static inline char *mingw_find_last_dir_sep(const char *path)
-{
-	char *ret = NULL;
-	for (; *path; ++path)
-		if (is_dir_sep(*path))
-			ret = (char *)path;
-	return ret;
-}
 static inline void convert_slashes(char *path)
 {
 	for (; *path; path++)
 		if (*path == '\\')
 			*path = '/';
 }
-#define find_last_dir_sep mingw_find_last_dir_sep
-int mingw_offset_1st_component(const char *path);
-#define offset_1st_component mingw_offset_1st_component
+struct strbuf;
+int mingw_is_mount_point(struct strbuf *path);
+extern int (*win32_is_mount_point)(struct strbuf *path);
+#define is_mount_point win32_is_mount_point
+#define CAN_UNLINK_MOUNT_POINTS 1
 #define PATH_SEP ';'
-extern char *mingw_query_user_email(void);
+char *mingw_query_user_email(void);
 #define query_user_email mingw_query_user_email
-extern const char *program_data_config(void);
-#define git_program_data_config program_data_config
 #if !defined(__MINGW64_VERSION_MAJOR) && (!defined(_MSC_VER) || _MSC_VER < 1800)
 #define PRIuMAX "I64u"
 #define PRId64 "I64d"
@@ -699,41 +654,35 @@ int xwcstoutf(char *utf, const wchar_t *wcs, size_t utflen);
 extern CRITICAL_SECTION pinfo_cs;
 
 /*
- * A replacement of main() that adds win32 specific initialization.
+ * Git, like most portable C applications, implements a main() function. On
+ * Windows, this main() function would receive parameters encoded in the
+ * current locale, but Git for Windows would prefer UTF-8 encoded  parameters.
  *
- * Note that the end of these macros are unterminated so that the
- * brace group following the use of the macro is the body of the
- * function.
+ * To make that happen, we still declare main() here, and then declare and
+ * implement wmain() (which is the Unicode variant of main()) and compile with
+ * -municode. This wmain() function reencodes the parameters from UTF-16 to
+ * UTF-8 format, sets up a couple of other things as required on Windows, and
+ * then hands off to the main() function.
  */
-#if defined(_MSC_VER)
+int wmain(int argc, const wchar_t **w_argv);
+int main(int argc, const char **argv);
 
-int msc_startup(int argc, wchar_t **w_argv, wchar_t **w_env);
-extern int msc_main(int argc, const char **argv);
-
-#define main(c,v) dummy_decl_msc_main(void);				\
-int wmain(int my_argc,									\
-		  wchar_t **my_w_argv,							\
-		  wchar_t **my_w_env)							\
-{														\
-	return msc_startup(my_argc, my_w_argv, my_w_env);	\
-}														\
-int msc_main(c, v)
-
-#else
-
-void mingw_startup(void);
-#define main(c,v) dummy_decl_mingw_main(void); \
-static int mingw_main(c,v); \
-int main(int argc, const char **argv) \
-{ \
-	mingw_startup(); \
-	return mingw_main(__argc, (void *)__argv); \
-} \
-static int mingw_main(c,v)
-
-#endif
+/*
+ * For debugging: if a problem occurs, say, in a Git process that is spawned
+ * from another Git process which in turn is spawned from yet another Git
+ * process, it can be quite daunting to figure out what is going on.
+ *
+ * Call this function to open a new MinTTY (this assumes you are in Git for
+ * Windows' SDK) with a GDB that attaches to the current process right away.
+ */
+extern void open_in_gdb(void);
 
 /*
  * Used by Pthread API implementation for Windows
  */
-extern int err_win_to_posix(DWORD winerr);
+int err_win_to_posix(DWORD winerr);
+
+/*
+ * Check current process is inside Windows Container.
+ */
+int is_inside_windows_container(void);

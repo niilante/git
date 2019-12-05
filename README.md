@@ -1,6 +1,8 @@
 Git for Windows
 ===============
 
+[![Build Status (Windows/macOS/Linux)](https://dev.azure.com/git-for-windows/git/_apis/build/status/git-for-windows.git)](https://dev.azure.com/git-for-windows/git/_build/latest?definitionId=17)
+[![Build Status (core.autocrlf=true)](https://dev.azure.com/Git-for-Windows/git/_apis/build/status/TestWithAutoCRLF)](https://dev.azure.com/Git-for-Windows/git/_build/latest?definitionId=3)
 [![Join the chat at https://gitter.im/git-for-windows/git](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/git-for-windows/git?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 This is [Git for Windows](http://git-for-windows.github.io/), the Windows port
@@ -33,7 +35,7 @@ including full documentation and Git related tools.
 
 See [Documentation/gittutorial.txt][] to get started, then see
 [Documentation/giteveryday.txt][] for a useful minimum set of commands, and
-Documentation/git-<commandname>.txt for documentation of each command.
+`Documentation/git-<commandname>.txt` for documentation of each command.
 If git has been correctly installed, then the tutorial can also be
 read with `man gittutorial` or `git help tutorial`, and the
 documentation of each command with `man git-<commandname>` or `git help
@@ -52,6 +54,9 @@ the body to majordomo@vger.kernel.org. The mailing list archives are
 available at <https://public-inbox.org/git/>,
 <http://marc.info/?l=git> and other archival sites.
 The core git mailing list is plain text (no HTML!).
+
+Issues which are security relevant should be disclosed privately to
+the Git Security mailing list <git-security@googlegroups.com>.
 
 The maintainer frequently sends the "What's cooking" reports that
 list the current status of various development topics to the mailing

@@ -53,8 +53,8 @@ The notable options are:
 	not be returned even if all of its contents are ignored. In
 	this case, the contents are returned as individual entries.
 +
-If this is set, files and directories that explicity match an ignore
-pattern are reported. Implicity ignored directories (directories that
+If this is set, files and directories that explicitly match an ignore
+pattern are reported. Implicitly ignored directories (directories that
 do not match an ignore pattern, but whose contents are all ignored)
 are not reported, instead all of the contents are reported.
 
@@ -111,11 +111,11 @@ marked. If you to exclude files, make sure you have loaded index first.
 * Prepare `struct dir_struct dir` and clear it with `memset(&dir, 0,
   sizeof(dir))`.
 
-* To add single exclude pattern, call `add_exclude_list()` and then
-  `add_exclude()`.
+* To add single exclude pattern, call `add_pattern_list()` and then
+  `add_pattern()`.
 
 * To add patterns from a file (e.g. `.git/info/exclude`), call
-  `add_excludes_from_file()` , and/or set `dir.exclude_per_dir`.  A
+  `add_patterns_from_file()` , and/or set `dir.exclude_per_dir`.  A
   short-hand function `setup_standard_excludes()` can be used to set
   up the standard set of exclude settings.
 

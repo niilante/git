@@ -34,17 +34,6 @@ typedef int pthread_mutexattr_t;
 
 #define pthread_cond_t CONDITION_VARIABLE
 
-WINBASEAPI VOID WINAPI
-InitializeConditionVariable(PCONDITION_VARIABLE ConditionVariable);
-WINBASEAPI VOID WINAPI
-WakeConditionVariable(PCONDITION_VARIABLE ConditionVariable);
-WINBASEAPI VOID WINAPI
-WakeAllConditionVariable(PCONDITION_VARIABLE ConditionVariable);
-WINBASEAPI BOOL WINAPI
-SleepConditionVariableCS(PCONDITION_VARIABLE ConditionVariable,
-                         PCRITICAL_SECTION CriticalSection,
-                         DWORD dwMilliseconds);
-
 #define pthread_cond_init(a,b) InitializeConditionVariable((a))
 #define pthread_cond_destroy(a) do {} while (0)
 #define pthread_cond_wait(a,b) return_0(SleepConditionVariableCS((a), (b), INFINITE))
@@ -61,8 +50,8 @@ typedef struct {
 	DWORD tid;
 } pthread_t;
 
-extern int pthread_create(pthread_t *thread, const void *unused,
-			  void *(*start_routine)(void*), void *arg);
+int pthread_create(pthread_t *thread, const void *unused,
+		   void *(*start_routine)(void*), void *arg);
 
 /*
  * To avoid the need of copying a struct, we use small macro wrapper to pass
@@ -70,10 +59,10 @@ extern int pthread_create(pthread_t *thread, const void *unused,
  */
 #define pthread_join(a, b) win32_pthread_join(&(a), (b))
 
-extern int win32_pthread_join(pthread_t *thread, void **value_ptr);
+int win32_pthread_join(pthread_t *thread, void **value_ptr);
 
 #define pthread_equal(t1, t2) ((t1).tid == (t2).tid)
-extern pthread_t pthread_self(void);
+pthread_t pthread_self(void);
 
 static inline void NORETURN pthread_exit(void *ret)
 {

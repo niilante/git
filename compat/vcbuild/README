@@ -1,7 +1,7 @@
 The Steps to Build Git with VS2015 or VS2017 from the command line.
 
 1. Install the "vcpkg" open source package manager and build essential
-   third-party libaries.  The steps for this have been captured in a
+   third-party libraries.  The steps for this have been captured in a
    set of convenience scripts.  These can be run from a stock Command
    Prompt or from an SDK bash window:
 
@@ -37,16 +37,27 @@ The Steps to Build Git with VS2015 or VS2017 from the command line.
 
 ================================================================
 
-Alternatively, run `make MSVC=1 vcxproj` and then load the generated
-git.sln in Visual Studio. The initial build will install the vcpkg
-system and build the dependencies automatically. This will take a while.
+Alternatively, run `make vcxproj` and then load the generated `git.sln` in
+Visual Studio. The initial build will install the vcpkg system and build the
+dependencies automatically. This will take a while.
 
-Note that this will automatically add and commit the generated
-.sln and .vcxproj files to the repo.  You may want to drop this
-commit before submitting a Pull Request....
+Instead of generating the `git.sln` file yourself (which requires a full Git
+for Windows SDK), you may want to consider fetching the `vs/master` branch of
+https://github.com/git-for-windows/git instead (which is updated automatically
+via CI running `make vcxproj`). The `vs/master` branch does not require a Git
+for Windows to build, but you can run the test scripts in a regular Git Bash.
 
-Or maybe we should put the .sln/.vcxproj files in the .gitignores
-and not do this.  I'm not sure.
+Note that `make vcxproj` will automatically add and commit the generated `.sln`
+and `.vcxproj` files to the repo. This is necessary to allow building a
+fully-testable Git in Visual Studio, where a regular Git Bash can be used to
+run the test scripts (as opposed to a full Git for Windows SDK): a number of
+build targets, such as Git commands implemented as Unix shell scripts (where
+`@@SHELL_PATH@@` and other placeholders are interpolated) require a full-blown
+Git for Windows SDK (which is about 10x the size of a regular Git for Windows
+installation).
+
+If your plan is to open a Pull Request with Git for Windows, it is a good idea
+to drop this commit before submitting.
 
 ================================================================
 The Steps of Build Git with VS2008
@@ -81,8 +92,8 @@ The Steps of Build Git with VS2008
    the git operations.
 
 3. Inside Git's directory run the command:
-       make common-cmds.h
-   to generate the common-cmds.h file needed to compile git.
+       make command-list.h
+   to generate the command-list.h file needed to compile git.
 
 4. Then either build Git with the GNU Make Makefile in the Git projects
    root

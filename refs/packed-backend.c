@@ -5,6 +5,7 @@
 #include "packed-backend.h"
 #include "../iterator.h"
 #include "../lockfile.h"
+#include "../chdir-notify.h"
 
 enum mmap_strategy {
 	/*
@@ -68,17 +69,21 @@ struct snapshot {
 	int mmapped;
 
 	/*
-	 * The contents of the `packed-refs` file. If the file was
-	 * already sorted, this points at the mmapped contents of the
-	 * file. If not, this points at heap-allocated memory
-	 * containing the contents, sorted. If there were no contents
-	 * (e.g., because the file didn't exist), `buf` and `eof` are
-	 * both NULL.
+	 * The contents of the `packed-refs` file:
+	 *
+	 * - buf -- a pointer to the start of the memory
+	 * - start -- a pointer to the first byte of actual references
+	 *   (i.e., after the header line, if one is present)
+	 * - eof -- a pointer just past the end of the reference
+	 *   contents
+	 *
+	 * If the `packed-refs` file was already sorted, `buf` points
+	 * at the mmapped contents of the file. If not, it points at
+	 * heap-allocated memory containing the contents, sorted. If
+	 * there were no contents (e.g., because the file didn't
+	 * exist), `buf`, `start`, and `eof` are all NULL.
 	 */
-	char *buf, *eof;
-
-	/* The size of the header line, if any; otherwise, 0: */
-	size_t header_len;
+	char *buf, *start, *eof;
 
 	/*
 	 * What is the peeled state of the `packed-refs` file that
@@ -169,8 +174,7 @@ static void clear_snapshot_buffer(struct snapshot *snapshot)
 	} else {
 		free(snapshot->buf);
 	}
-	snapshot->buf = snapshot->eof = NULL;
-	snapshot->header_len = 0;
+	snapshot->buf = snapshot->start = snapshot->eof = NULL;
 }
 
 /*
@@ -199,6 +203,8 @@ struct ref_store *packed_ref_store_create(const char *path,
 	refs->store_flags = store_flags;
 
 	refs->path = xstrdup(path);
+	chdir_notify_reparent("packed-refs", &refs->path);
+
 	return ref_store;
 }
 
@@ -215,13 +221,13 @@ static struct packed_ref_store *packed_downcast(struct ref_store *ref_store,
 	struct packed_ref_store *refs;
 
 	if (ref_store->be != &refs_be_packed)
-		die("BUG: ref_store is type \"%s\" not \"packed\" in %s",
+		BUG("ref_store is type \"%s\" not \"packed\" in %s",
 		    ref_store->be->name, caller);
 
 	refs = (struct packed_ref_store *)ref_store;
 
 	if ((refs->store_flags & required_flags) != required_flags)
-		die("BUG: unallowed operation (%s), requires %x, has %x\n",
+		BUG("unallowed operation (%s), requires %x, has %x\n",
 		    caller, required_flags, refs->store_flags);
 
 	return refs;
@@ -268,8 +274,8 @@ struct snapshot_record {
 static int cmp_packed_ref_records(const void *v1, const void *v2)
 {
 	const struct snapshot_record *e1 = v1, *e2 = v2;
-	const char *r1 = e1->start + GIT_SHA1_HEXSZ + 1;
-	const char *r2 = e2->start + GIT_SHA1_HEXSZ + 1;
+	const char *r1 = e1->start + the_hash_algo->hexsz + 1;
+	const char *r2 = e2->start + the_hash_algo->hexsz + 1;
 
 	while (1) {
 		if (*r1 == '\n')
@@ -291,7 +297,7 @@ static int cmp_packed_ref_records(const void *v1, const void *v2)
  */
 static int cmp_record_to_refname(const char *rec, const char *refname)
 {
-	const char *r1 = rec + GIT_SHA1_HEXSZ + 1;
+	const char *r1 = rec + the_hash_algo->hexsz + 1;
 	const char *r2 = refname;
 
 	while (1) {
@@ -319,12 +325,13 @@ static void sort_snapshot(struct snapshot *snapshot)
 	size_t len, i;
 	char *new_buffer, *dst;
 
-	pos = snapshot->buf + snapshot->header_len;
+	pos = snapshot->start;
 	eof = snapshot->eof;
-	len = eof - pos;
 
-	if (!len)
+	if (pos == eof)
 		return;
+
+	len = eof - pos;
 
 	/*
 	 * Initialize records based on a crude estimate of the number
@@ -337,7 +344,7 @@ static void sort_snapshot(struct snapshot *snapshot)
 		if (!eol)
 			/* The safety check should prevent this. */
 			BUG("unterminated line found in packed-refs");
-		if (eol - pos < GIT_SHA1_HEXSZ + 2)
+		if (eol - pos < the_hash_algo->hexsz + 2)
 			die_invalid_line(snapshot->refs->path,
 					 pos, eof - pos);
 		eol++;
@@ -391,9 +398,8 @@ static void sort_snapshot(struct snapshot *snapshot)
 	 * place:
 	 */
 	clear_snapshot_buffer(snapshot);
-	snapshot->buf = new_buffer;
+	snapshot->buf = snapshot->start = new_buffer;
 	snapshot->eof = new_buffer + len;
-	snapshot->header_len = 0;
 
 cleanup:
 	free(records);
@@ -442,15 +448,15 @@ static const char *find_end_of_record(const char *p, const char *end)
  */
 static void verify_buffer_safe(struct snapshot *snapshot)
 {
-	const char *buf = snapshot->buf + snapshot->header_len;
+	const char *start = snapshot->start;
 	const char *eof = snapshot->eof;
 	const char *last_line;
 
-	if (buf == eof)
+	if (start == eof)
 		return;
 
-	last_line = find_start_of_record(buf, eof - 1);
-	if (*(eof - 1) != '\n' || eof - last_line < GIT_SHA1_HEXSZ + 2)
+	last_line = find_start_of_record(start, eof - 1);
+	if (*(eof - 1) != '\n' || eof - last_line < the_hash_algo->hexsz + 2)
 		die_invalid_line(snapshot->refs->path,
 				 last_line, eof - last_line);
 }
@@ -460,7 +466,8 @@ static void verify_buffer_safe(struct snapshot *snapshot)
 /*
  * Depending on `mmap_strategy`, either mmap or read the contents of
  * the `packed-refs` file into the snapshot. Return 1 if the file
- * existed and was read, or 0 if the file was absent. Die on errors.
+ * existed and was read, or 0 if the file was absent or empty. Die on
+ * errors.
  */
 static int load_contents(struct snapshot *snapshot)
 {
@@ -491,19 +498,23 @@ static int load_contents(struct snapshot *snapshot)
 		die_errno("couldn't stat %s", snapshot->refs->path);
 	size = xsize_t(st.st_size);
 
-	if (size <= SMALL_FILE_SIZE || mmap_strategy == MMAP_NONE) {
+	if (!size) {
+		close(fd);
+		return 0;
+	} else if (mmap_strategy == MMAP_NONE || size <= SMALL_FILE_SIZE) {
 		snapshot->buf = xmalloc(size);
 		bytes_read = read_in_full(fd, snapshot->buf, size);
 		if (bytes_read < 0 || bytes_read != size)
 			die_errno("couldn't read %s", snapshot->refs->path);
-		snapshot->eof = snapshot->buf + size;
 		snapshot->mmapped = 0;
 	} else {
 		snapshot->buf = xmmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
-		snapshot->eof = snapshot->buf + size;
 		snapshot->mmapped = 1;
 	}
 	close(fd);
+
+	snapshot->start = snapshot->buf;
+	snapshot->eof = snapshot->buf + size;
 
 	return 1;
 }
@@ -513,9 +524,11 @@ static int load_contents(struct snapshot *snapshot)
  * `refname` starts. If `mustexist` is true and the reference doesn't
  * exist, then return NULL. If `mustexist` is false and the reference
  * doesn't exist, then return the point where that reference would be
- * inserted. In the latter mode, `refname` doesn't have to be a proper
- * reference name; for example, one could search for "refs/replace/"
- * to find the start of any replace references.
+ * inserted, or `snapshot->eof` (which might be NULL) if it would be
+ * inserted at the end of the file. In the latter mode, `refname`
+ * doesn't have to be a proper reference name; for example, one could
+ * search for "refs/replace/" to find the start of any replace
+ * references.
  *
  * The record is sought using a binary search, so `snapshot->buf` must
  * be sorted.
@@ -537,7 +550,7 @@ static const char *find_reference_location(struct snapshot *snapshot,
 	 * preceding records all have reference names that come
 	 * *before* `refname`.
 	 */
-	const char *lo = snapshot->buf + snapshot->header_len;
+	const char *lo = snapshot->start;
 
 	/*
 	 * A pointer to a the first character of a record whose
@@ -545,7 +558,7 @@ static const char *find_reference_location(struct snapshot *snapshot,
 	 */
 	const char *hi = snapshot->eof;
 
-	while (lo < hi) {
+	while (lo != hi) {
 		const char *mid, *rec;
 		int cmp;
 
@@ -614,9 +627,7 @@ static struct snapshot *create_snapshot(struct packed_ref_store *refs)
 
 	/* If the file has a header line, process it: */
 	if (snapshot->buf < snapshot->eof && *snapshot->buf == '#') {
-		struct strbuf tmp = STRBUF_INIT;
-		char *p;
-		const char *eol;
+		char *tmp, *p, *eol;
 		struct string_list traits = STRING_LIST_INIT_NODUP;
 
 		eol = memchr(snapshot->buf, '\n',
@@ -626,9 +637,9 @@ static struct snapshot *create_snapshot(struct packed_ref_store *refs)
 					      snapshot->buf,
 					      snapshot->eof - snapshot->buf);
 
-		strbuf_add(&tmp, snapshot->buf, eol - snapshot->buf);
+		tmp = xmemdupz(snapshot->buf, eol - snapshot->buf);
 
-		if (!skip_prefix(tmp.buf, "# pack-refs with:", (const char **)&p))
+		if (!skip_prefix(tmp, "# pack-refs with:", (const char **)&p))
 			die_invalid_line(refs->path,
 					 snapshot->buf,
 					 snapshot->eof - snapshot->buf);
@@ -645,10 +656,10 @@ static struct snapshot *create_snapshot(struct packed_ref_store *refs)
 		/* perhaps other traits later as well */
 
 		/* The "+ 1" is for the LF character. */
-		snapshot->header_len = eol + 1 - snapshot->buf;
+		snapshot->start = eol + 1;
 
 		string_list_clear(&traits, 0);
-		strbuf_release(&tmp);
+		free(tmp);
 	}
 
 	verify_buffer_safe(snapshot);
@@ -669,13 +680,12 @@ static struct snapshot *create_snapshot(struct packed_ref_store *refs)
 		 * We don't want to leave the file mmapped, so we are
 		 * forced to make a copy now:
 		 */
-		size_t size = snapshot->eof -
-			(snapshot->buf + snapshot->header_len);
+		size_t size = snapshot->eof - snapshot->start;
 		char *buf_copy = xmalloc(size);
 
-		memcpy(buf_copy, snapshot->buf + snapshot->header_len, size);
+		memcpy(buf_copy, snapshot->start, size);
 		clear_snapshot_buffer(snapshot);
-		snapshot->buf = buf_copy;
+		snapshot->buf = snapshot->start = buf_copy;
 		snapshot->eof = buf_copy + size;
 	}
 
@@ -786,7 +796,7 @@ static int next_record(struct packed_ref_iterator *iter)
 
 	iter->base.flags = REF_ISPACKED;
 
-	if (iter->eof - p < GIT_SHA1_HEXSZ + 2 ||
+	if (iter->eof - p < the_hash_algo->hexsz + 2 ||
 	    parse_oid_hex(p, &iter->oid, &p) ||
 	    !isspace(*p++))
 		die_invalid_line(iter->snapshot->refs->path,
@@ -816,7 +826,7 @@ static int next_record(struct packed_ref_iterator *iter)
 
 	if (iter->pos < iter->eof && *iter->pos == '^') {
 		p = iter->pos + 1;
-		if (iter->eof - p < GIT_SHA1_HEXSZ + 1 ||
+		if (iter->eof - p < the_hash_algo->hexsz + 1 ||
 		    parse_oid_hex(p, &iter->peeled, &p) ||
 		    *p++ != '\n')
 			die_invalid_line(iter->snapshot->refs->path,
@@ -922,7 +932,12 @@ static struct ref_iterator *packed_ref_iterator_begin(
 	 */
 	snapshot = get_snapshot(refs);
 
-	if (!snapshot->buf)
+	if (prefix && *prefix)
+		start = find_reference_location(snapshot, prefix, 0);
+	else
+		start = snapshot->start;
+
+	if (start == snapshot->eof)
 		return empty_ref_iterator_begin();
 
 	iter = xcalloc(1, sizeof(*iter));
@@ -931,11 +946,6 @@ static struct ref_iterator *packed_ref_iterator_begin(
 
 	iter->snapshot = snapshot;
 	acquire_snapshot(snapshot);
-
-	if (prefix && *prefix)
-		start = find_reference_location(snapshot, prefix, 0);
-	else
-		start = snapshot->buf + snapshot->header_len;
 
 	iter->pos = start;
 	iter->eof = snapshot->eof;
@@ -1002,14 +1012,23 @@ int packed_refs_lock(struct ref_store *ref_store, int flags, struct strbuf *err)
 	}
 
 	/*
-	 * Now that we hold the `packed-refs` lock, make sure that our
-	 * snapshot matches the current version of the file. Normally
-	 * `get_snapshot()` does that for us, but that function
-	 * assumes that when the file is locked, any existing snapshot
-	 * is still valid. We've just locked the file, but it might
-	 * have changed the moment *before* we locked it.
+	 * There is a stat-validity problem might cause `update-ref -d`
+	 * lost the newly commit of a ref, because a new `packed-refs`
+	 * file might has the same on-disk file attributes such as
+	 * timestamp, file size and inode value, but has a changed
+	 * ref value.
+	 *
+	 * This could happen with a very small chance when
+	 * `update-ref -d` is called and at the same time another
+	 * `pack-refs --all` process is running.
+	 *
+	 * Now that we hold the `packed-refs` lock, it is important
+	 * to make sure we could read the latest version of
+	 * `packed-refs` file no matter we have just mmap it or not.
+	 * So what need to do is clear the snapshot if we hold it
+	 * already.
 	 */
-	validate_snapshot(refs);
+	clear_snapshot(refs);
 
 	/*
 	 * Now make sure that the packed-refs file as it exists in the
@@ -1027,7 +1046,7 @@ void packed_refs_unlock(struct ref_store *ref_store)
 			"packed_refs_unlock");
 
 	if (!is_lock_file_locked(&refs->lock))
-		die("BUG: packed_refs_unlock() called when not locked");
+		BUG("packed_refs_unlock() called when not locked");
 	rollback_lock_file(&refs->lock);
 }
 
@@ -1080,7 +1099,7 @@ static int write_with_updates(struct packed_ref_store *refs,
 	char *packed_refs_path;
 
 	if (!is_lock_file_locked(&refs->lock))
-		die("BUG: write_with_updates() called while unlocked");
+		BUG("write_with_updates() called while unlocked");
 
 	/*
 	 * If packed-refs is a symlink, we want to overwrite the
@@ -1150,7 +1169,7 @@ static int write_with_updates(struct packed_ref_store *refs,
 						    "reference already exists",
 						    update->refname);
 					goto error;
-				} else if (oidcmp(&update->old_oid, iter->oid)) {
+				} else if (!oideq(&update->old_oid, iter->oid)) {
 					strbuf_addf(err, "cannot update ref '%s': "
 						    "is at %s but expected %s",
 						    update->refname,
@@ -1554,21 +1573,21 @@ static int packed_create_symref(struct ref_store *ref_store,
 			       const char *refname, const char *target,
 			       const char *logmsg)
 {
-	die("BUG: packed reference store does not support symrefs");
+	BUG("packed reference store does not support symrefs");
 }
 
 static int packed_rename_ref(struct ref_store *ref_store,
 			    const char *oldrefname, const char *newrefname,
 			    const char *logmsg)
 {
-	die("BUG: packed reference store does not support renaming references");
+	BUG("packed reference store does not support renaming references");
 }
 
 static int packed_copy_ref(struct ref_store *ref_store,
 			   const char *oldrefname, const char *newrefname,
 			   const char *logmsg)
 {
-	die("BUG: packed reference store does not support copying references");
+	BUG("packed reference store does not support copying references");
 }
 
 static struct ref_iterator *packed_reflog_iterator_begin(struct ref_store *ref_store)
@@ -1601,7 +1620,7 @@ static int packed_create_reflog(struct ref_store *ref_store,
 			       const char *refname, int force_create,
 			       struct strbuf *err)
 {
-	die("BUG: packed reference store does not support reflogs");
+	BUG("packed reference store does not support reflogs");
 }
 
 static int packed_delete_reflog(struct ref_store *ref_store,

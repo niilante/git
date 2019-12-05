@@ -121,10 +121,9 @@ test_expect_success 'describe --contains defaults to HEAD without commit-ish' '
 	test_cmp expect actual
 '
 
-: >err.expect
-check_describe A --all A^0
+check_describe tags/A --all A^0
 test_expect_success 'no warning was displayed for A' '
-	test_cmp err.expect err.actual
+	test_must_be_empty err.actual
 '
 
 test_expect_success 'rename tag A to Q locally' '
@@ -144,7 +143,21 @@ test_expect_success 'rename tag Q back to A' '
 test_expect_success 'pack tag refs' 'git pack-refs'
 check_describe A-* HEAD
 
+test_expect_success 'describe works from outside repo using --git-dir' '
+	git clone --bare "$TRASH_DIRECTORY" "$TRASH_DIRECTORY/bare" &&
+	git --git-dir "$TRASH_DIRECTORY/bare" describe >out &&
+	grep -E "^A-[1-9][0-9]?-g[0-9a-f]+$" out
+'
+
 check_describe "A-*[0-9a-f]" --dirty
+
+test_expect_success 'describe --dirty with --work-tree' '
+	(
+		cd "$TEST_DIRECTORY" &&
+		git --git-dir "$TRASH_DIRECTORY/.git" --work-tree "$TRASH_DIRECTORY" describe --dirty >"$TRASH_DIRECTORY/out"
+	) &&
+	grep -E "^A-[1-9][0-9]?-g[0-9a-f]+$" out
+'
 
 test_expect_success 'set-up dirty work tree' '
 	echo >>file
@@ -152,7 +165,23 @@ test_expect_success 'set-up dirty work tree' '
 
 check_describe "A-*[0-9a-f]-dirty" --dirty
 
+test_expect_success 'describe --dirty with --work-tree (dirty)' '
+	(
+		cd "$TEST_DIRECTORY" &&
+		git --git-dir "$TRASH_DIRECTORY/.git" --work-tree "$TRASH_DIRECTORY" describe --dirty >"$TRASH_DIRECTORY/out"
+	) &&
+	grep -E "^A-[1-9][0-9]?-g[0-9a-f]+-dirty$" out
+'
+
 check_describe "A-*[0-9a-f].mod" --dirty=.mod
+
+test_expect_success 'describe --dirty=.mod with --work-tree (dirty)' '
+	(
+		cd "$TEST_DIRECTORY" &&
+		git --git-dir "$TRASH_DIRECTORY/.git" --work-tree "$TRASH_DIRECTORY" describe --dirty=.mod >"$TRASH_DIRECTORY/out"
+	) &&
+	grep -E "^A-[1-9][0-9]?-g[0-9a-f]+.mod$" out
+'
 
 test_expect_success 'describe --dirty HEAD' '
 	test_must_fail git describe --dirty HEAD
@@ -304,8 +333,17 @@ test_expect_success 'describe chokes on severely broken submodules' '
 	mv .git/modules/sub1/ .git/modules/sub_moved &&
 	test_must_fail git describe --dirty
 '
+
 test_expect_success 'describe ignoring a broken submodule' '
 	git describe --broken >out &&
+	grep broken out
+'
+
+test_expect_success 'describe with --work-tree ignoring a broken submodule' '
+	(
+		cd "$TEST_DIRECTORY" &&
+		git --git-dir "$TRASH_DIRECTORY/.git" --work-tree "$TRASH_DIRECTORY" describe --broken >"$TRASH_DIRECTORY/out"
+	) &&
 	test_when_finished "mv .git/modules/sub_moved .git/modules/sub1" &&
 	grep broken out
 '
@@ -371,6 +409,33 @@ test_expect_success ULIMIT_STACK_SIZE 'describe works in a deep repo' '
 	git describe --tags --abbrev=0 HEAD~4000 >actual &&
 	test_cmp expect actual &&
 	run_with_limited_stack git describe --tags --abbrev=0 HEAD~4000 >actual &&
+	test_cmp expect actual
+'
+
+check_describe tags/A --all A
+check_describe tags/c --all c
+check_describe heads/branch_A --all --match='branch_*' branch_A
+
+test_expect_success 'describe complains about tree object' '
+	test_must_fail git describe HEAD^{tree}
+'
+
+test_expect_success 'describe complains about missing object' '
+	test_must_fail git describe $ZERO_OID
+'
+
+test_expect_success 'name-rev a rev shortly after epoch' '
+	test_when_finished "git checkout master" &&
+
+	git checkout --orphan no-timestamp-underflow &&
+	# Any date closer to epoch than the CUTOFF_DATE_SLOP constant
+	# in builtin/name-rev.c.
+	GIT_COMMITTER_DATE="@1234 +0000" \
+	git commit -m "committer date shortly after epoch" &&
+	old_commit_oid=$(git rev-parse HEAD) &&
+
+	echo "$old_commit_oid no-timestamp-underflow" >expect &&
+	git name-rev $old_commit_oid >actual &&
 	test_cmp expect actual
 '
 
